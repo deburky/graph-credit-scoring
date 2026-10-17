@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[oc]
+.venv/
+.mypy_cache/
+.ruff_cache/
+
+# data: only the synthetic sample is tracked
+data/*
+!data/sample/
+data/sample/*
+!data/sample/raw/
+data/sample/raw/*
+!data/sample/raw/dgraph.npz
+
+# run outputs and tool artifacts
+outputs/
+catboost_info/
+
+# macOS
+.DS_Store

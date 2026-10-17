@@ -1,0 +1,60 @@
+[project]
+name = "graph-credit-scoring"
+version = "0.1.0"
+description = "Graph-based credit-fraud scoring on emergency-contact networks: observed contact graphs, k-NN similarity graphs, tabular and GNN models"
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "catboost>=1.2",
+    "faiss-cpu>=1.15.1",
+    "lightgbm>=4.7.0",
+    "matplotlib>=3.10.8",
+    "networkx>=3.4",
+    "numpy>=1.26.4",
+    "optuna>=5.0.0",
+    "pandas>=2.3.3",
+    "scikit-learn>=1.7.2",
+    "torch>=2.10.0",
+    "torch-geometric>=2.8.1",
+]
+
+[dependency-groups]
+dev = [
+    "mypy>=1.18",
+    "ruff>=0.14",
+    "ty>=0.0.1a20",
+]
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+src = ["scripts"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "W"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["paths", "dgraph_data", "graph_features", "build_graphs", "make_sample"]
+
+[tool.mypy]
+python_version = "3.12"
+mypy_path = "scripts"
+explicit_package_bases = true
+warn_unused_ignores = true
+
+# third-party packages without type information
+[[tool.mypy.overrides]]
+module = ["faiss", "catboost", "lightgbm", "torch_geometric.*", "sklearn.*", "networkx"]
+ignore_missing_imports = true
+
+[tool.ty.environment]
+extra-paths = ["scripts"]
+
+# Two library declarations that ty reports at every PyTorch / PyG call site. They stay visible
+# as warnings; nothing is suppressed in the code.
+#   invalid-mutable-override: torch declares nn.Module.forward as an attribute, and every model overrides it.
+#   call-non-callable: PyG marks MessagePassing.edge_update @abstractmethod without ABCMeta, so its layers
+#   (SAGEConv, GCNConv, GATConv, TransformerConv) are instantiable at runtime.
+[tool.ty.rules]
+invalid-mutable-override = "warn"
+call-non-callable = "warn"
