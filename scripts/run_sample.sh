@@ -28,7 +28,8 @@ py scripts/ablate_struct.py
 py scripts/train_gnn.py --model sage --graph real --device cpu --epochs 60
 py scripts/train_gnn.py --model sage --graph knn2 --device cpu --epochs 60
 py scripts/train_embed.py --model relsage --epochs 60
-py scripts/train_embed.py --model transformer --epochs 60
+py scripts/train_embed.py --model transformer --epochs 60     # also saves per-contact attention weights
+py scripts/train_embed.py --model global --epochs 60          # learned-similarity control, no edges
 py scripts/train_embed.py --model dgi --graph real --epochs 60 --patience 20
 py scripts/train_embed.py --model dgi --graph knn2 --epochs 60 --patience 20
 

@@ -14,6 +14,9 @@ Two ways to get node embeddings, each followed by a logistic-regression head
              TransformerConv layers attend over each user's contacts in both
              directions, with contact type, edge time and direction as edge
              features, so it learns which contacts matter instead of averaging.
+    global   linear global attention (Katharopoulos et al., 2020) on node features
+             only: every user attends to every user, so the model learns its own
+             similarity graph (the learned-similarity control; no edges are used).
     dgi      label-free Deep Graph Infomax embeddings (2-layer GraphSAGE
              encoder on node features only), on the contact graph or a k-NN
              graph, so the graph is the only thing that differs.
@@ -23,6 +26,7 @@ scale).
 
 Run: uv run python scripts/train_embed.py --model relsage
      uv run python scripts/train_embed.py --model transformer
+     uv run python scripts/train_embed.py --model global --device mps
      uv run python scripts/train_embed.py --model dgi --graph real
      uv run python scripts/train_embed.py --model dgi --graph knn2
 """
@@ -144,6 +148,70 @@ class GraphTransformer(nn.Module):
     def forward(self, x: torch.Tensor, graph: dict[str, torch.Tensor]) -> torch.Tensor:
         return self.head(self.embed(x, graph))
 
+    @torch.no_grad()
+    def attention(self, x: torch.Tensor, graph: dict[str, torch.Tensor]) -> list[torch.Tensor]:
+        """Per-layer attention weights, (messages, heads); they sum to one over each user's incoming messages."""
+        weights = []
+        h = F.relu(self.inp(x))
+        for conv, norm in zip(self.convs, self.norms, strict=True):
+            out, (_, alpha) = conv(h, graph["edge_index"], graph["edge_attr"], return_attention_weights=True)
+            weights.append(alpha)
+            h = h + F.relu(norm(out))
+        return weights
+
+
+# -------------------------------------------------------------------------------
+# Global linear attention (learned similarity, no graph)
+# -------------------------------------------------------------------------------
+class GlobalAttention(nn.Module):
+    """Kernelized linear attention over all users (Katharopoulos et al., 2020), O(n d^2).
+
+    With phi(z) = elu(z) + 1, user i receives sum_j w_ij v_j where
+    w_ij = phi(q_i) . phi(k_j) / sum_l phi(q_i) . phi(k_l): a normalized average over every
+    user, weighted by learned feature similarity, computed per head without the n x n matrix.
+    """
+
+    def __init__(self, d: int, heads: int):
+        super().__init__()
+        self.heads = heads
+        self.wq = nn.Linear(d, d)
+        self.wk = nn.Linear(d, d)
+        self.wv = nn.Linear(d, d)
+        self.out = nn.Linear(d, d)
+
+    def forward(self, h: torch.Tensor) -> torch.Tensor:
+        n, d = h.shape
+        shape = (n, self.heads, d // self.heads)
+        q = F.elu(self.wq(h).view(shape)) + 1
+        k = F.elu(self.wk(h).view(shape)) + 1
+        v = self.wv(h).view(shape)
+        kv = torch.einsum("nhm,nhd->hmd", k, v)
+        num = torch.einsum("nhm,hmd->nhd", q, kv)
+        den = torch.einsum("nhm,hm->nh", q, k.sum(0)).unsqueeze(-1)
+        return self.out((num / den).reshape(n, d))
+
+
+class GlobalFormer(nn.Module):
+    """Node features, global attention layers with residuals, linear head. Uses no edges."""
+
+    def __init__(self, d_in: int, hidden: int, layers: int, heads: int, dropout: float):
+        super().__init__()
+        self.dropout = dropout
+        self.inp = nn.Linear(d_in, hidden)
+        self.attns = nn.ModuleList([GlobalAttention(hidden, heads) for _ in range(layers)])
+        self.norms = nn.ModuleList([nn.BatchNorm1d(hidden) for _ in range(layers)])
+        self.head = nn.Linear(hidden, 2)
+
+    def embed(self, x: torch.Tensor, graph: dict[str, torch.Tensor]) -> torch.Tensor:
+        h = F.relu(self.inp(x))
+        for attn, norm in zip(self.attns, self.norms, strict=True):
+            z = F.relu(norm(attn(h)))
+            h = h + F.dropout(z, self.dropout, self.training)
+        return h
+
+    def forward(self, x: torch.Tensor, graph: dict[str, torch.Tensor]) -> torch.Tensor:
+        return self.head(self.embed(x, graph))
+
 
 def transformer_graph(g: dgraph_data.DGraph) -> dict[str, torch.Tensor]:
     """Messages flow j -> i; user i hears from the users who named it (edge as stored)
@@ -158,19 +226,35 @@ def transformer_graph(g: dgraph_data.DGraph) -> dict[str, torch.Tensor]:
     return dict(edge_index=edge_index, edge_attr=torch.cat([attr.repeat(2, 1), flag], 1))
 
 
-def train_supervised(g: dgraph_data.DGraph, args: argparse.Namespace) -> tuple[torch.Tensor, torch.Tensor, int]:
-    struct = graph_features.build("real_struct", g)
-    struct = (struct - struct.mean(0)) / (struct.std(0) + 1e-6)
-    x = torch.cat([g.x, torch.from_numpy(struct)], 1)
-    model: RelSAGE | GraphTransformer
-    if args.model == "relsage":
-        graph = relational_graph(g)
-        model = RelSAGE(x.shape[1], args.hidden, args.layers, int(g.edge_type.max()) + 1, args.dropout)
+def train_supervised(
+    g: dgraph_data.DGraph, args: argparse.Namespace
+) -> tuple[torch.Tensor, torch.Tensor, int, torch.Tensor | None]:
+    """Train relsage, transformer or global end to end; returns embeddings, probabilities,
+    best epoch, and (transformer only) last-layer attention averaged over heads."""
+    dev = torch.device(args.device)
+    model: RelSAGE | GraphTransformer | GlobalFormer
+    graph: dict[str, torch.Tensor]
+    if args.model == "global":
+        # the learned-similarity arm: node features only, no edges and no graph-derived features
+        x = g.x
+        graph = {}
+        model = GlobalFormer(x.shape[1], args.hidden, args.layers, args.heads, args.dropout)
     else:
-        graph = transformer_graph(g)
-        model = GraphTransformer(
-            x.shape[1], args.hidden, args.layers, args.heads, graph["edge_attr"].shape[1], args.dropout
-        )
+        struct = graph_features.build("real_struct", g)
+        struct = (struct - struct.mean(0)) / (struct.std(0) + 1e-6)
+        x = torch.cat([g.x, torch.from_numpy(struct)], 1)
+        if args.model == "relsage":
+            graph = relational_graph(g)
+            model = RelSAGE(x.shape[1], args.hidden, args.layers, int(g.edge_type.max()) + 1, args.dropout)
+        else:
+            graph = transformer_graph(g)
+            model = GraphTransformer(
+                x.shape[1], args.hidden, args.layers, args.heads, graph["edge_attr"].shape[1], args.dropout
+            )
+    x = x.to(dev)
+    graph = {k: v.to(dev) for k, v in graph.items()}
+    model = model.to(dev)
+    train_idx, y_train = g.train_idx.to(dev), g.y[g.train_idx].to(dev)
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.wd)
     print(
         f"{args.model}: inputs={x.shape[1]} edges={g.edge_index.shape[1]:,} "
@@ -181,13 +265,13 @@ def train_supervised(g: dgraph_data.DGraph, args: argparse.Namespace) -> tuple[t
     for epoch in range(1, args.epochs + 1):
         model.train()
         opt.zero_grad()
-        loss = F.cross_entropy(model(x, graph)[g.train_idx], g.y[g.train_idx])
+        loss = F.cross_entropy(model(x, graph)[train_idx], y_train)
         loss.backward()
         opt.step()
         if epoch % 5 == 0:
             model.eval()
             with torch.no_grad():
-                p = model(x, graph).softmax(-1)[:, 1]
+                p = model(x, graph).softmax(-1)[:, 1].cpu()
             val_auc = roc_auc_score(g.y[g.val_idx].numpy(), p[g.val_idx].numpy())
             if val_auc > best_val:
                 best_val, best_epoch = val_auc, epoch
@@ -206,7 +290,8 @@ def train_supervised(g: dgraph_data.DGraph, args: argparse.Namespace) -> tuple[t
     with torch.no_grad():
         z = model.embed(x, graph)
         p = model.head(z).softmax(-1)[:, 1]
-    return z, p, best_epoch
+    attn = model.attention(x, graph)[-1].mean(1).cpu() if isinstance(model, GraphTransformer) else None
+    return z.cpu(), p.cpu(), best_epoch, attn
 
 
 # -------------------------------------------------------------------------------
@@ -291,17 +376,18 @@ def probe(feats: np.ndarray, g: dgraph_data.DGraph) -> dict[str, float]:
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--model", choices=["relsage", "transformer", "dgi"], default="relsage")
+    ap.add_argument("--model", choices=["relsage", "transformer", "global", "dgi"], default="relsage")
     ap.add_argument("--graph", default="real", help="dgi only: real or a k-NN graph name (knn2, knn6)")
     ap.add_argument("--hidden", type=int, default=64)
     ap.add_argument("--layers", type=int, default=2)
-    ap.add_argument("--heads", type=int, default=4, help="transformer only")
+    ap.add_argument("--heads", type=int, default=4, help="transformer and global")
     ap.add_argument("--dropout", type=float, default=0.3)
     ap.add_argument("--lr", type=float, default=5e-3)
     ap.add_argument("--wd", type=float, default=1e-6)
     ap.add_argument("--epochs", type=int, default=300)
     ap.add_argument("--patience", type=int, default=50)
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--device", default="cpu", help="cpu for message passing; global attention also runs on mps")
     args = ap.parse_args()
     torch.manual_seed(args.seed)
     g = dgraph_data.load()
@@ -310,22 +396,26 @@ def main() -> None:
     t0 = time.time()
     rows = []
 
-    if args.model in ("relsage", "transformer"):
-        z, p, best_epoch = train_supervised(g, args)
+    if args.model in ("relsage", "transformer", "global"):
+        z, p, best_epoch, attn = train_supervised(g, args)
+        graph_name = "none" if args.model == "global" else "real"
         test_auc = roc_auc_score(y[te], p[te].numpy())
         rows.append(
             dict(
                 model=args.model,
                 head="end-to-end linear",
-                graph="real",
+                graph=graph_name,
                 best_epoch=best_epoch,
                 test_auc=test_auc,
                 test_gini=2 * test_auc - 1,
             )
         )
-        rows.append(dict(model=args.model, head="logistic probe", graph="real", **probe(z.numpy(), g)))
+        rows.append(dict(model=args.model, head="logistic probe", graph=graph_name, **probe(z.numpy(), g)))
         PREDS.mkdir(parents=True, exist_ok=True)
-        np.save(PREDS / f"{args.model}_real.npy", p.numpy().astype(np.float32))
+        np.save(PREDS / f"{args.model}_{graph_name}.npy", p.numpy().astype(np.float32))
+        if attn is not None:
+            # message order as in transformer_graph: stored edges (target hears from source), then reversed
+            np.save(PREDS / "transformer_attention.npy", attn.numpy().astype(np.float16))
     else:
         if args.graph == "real":
             # the label-free baseline: the same logistic head on node features alone

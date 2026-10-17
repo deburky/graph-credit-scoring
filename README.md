@@ -12,7 +12,10 @@ and features:
 
 On each graph we train tabular learners on graph-derived features (LightGBM, CatBoost, an MLP), a
 GraphSAGE network, a relational GraphSAGE and a graph transformer that see edge direction, contact
-type and time, and label-free Deep Graph Infomax embeddings with a logistic-regression head.
+type and time, and label-free Deep Graph Infomax embeddings with a logistic-regression head. The graph
+transformer's attention weights show which contacts drive a user's score. A global-attention model,
+in which every user attends to every other user from node features alone, serves as a learned
+similarity graph: a stronger version of the *k*-NN control.
 
 ## Data
 
@@ -70,7 +73,7 @@ with more epochs; the full-graph GNNs take one to three hours each on a laptop C
 | `train_tabular.py` | LightGBM, CatBoost or an MLP on any combination of feature blocks |
 | `ablate_struct.py` | Which structure features carry the lift |
 | `train_gnn.py` | GraphSAGE, GCN or GAT on node features over a chosen graph |
-| `train_embed.py` | Relational GraphSAGE, graph transformer, and Deep Graph Infomax, each with a logistic-regression head |
+| `train_embed.py` | Relational GraphSAGE, graph transformer (with attention weights), global linear attention, and Deep Graph Infomax, each with a logistic-regression head |
 | `run_sample.sh` | Runs all of the above on the sample |
 
 Two practical notes. Message passing on the full graph runs on the CPU: at 3.7 million nodes, sparse
@@ -90,6 +93,9 @@ ty reports two library declarations as warnings at every PyTorch and PyG call si
 in `pyproject.toml`.
 
 ## References
+
+Katharopoulos, A., Vyas, A., Pappas, N., and Fleuret, F. (2020). Transformers are RNNs: fast
+autoregressive transformers with linear attention. *ICML 2020*. arXiv:2006.16236.
 
 Huang, X., Yang, Y., Wang, Y., Wang, C., Zhang, Z., Xu, J., Chen, L., and Vazirgiannis, M. (2022).
 DGraph: a large-scale financial dataset for graph anomaly detection. *NeurIPS 2022, Datasets and
