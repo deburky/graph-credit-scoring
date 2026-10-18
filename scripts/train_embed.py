@@ -21,27 +21,30 @@ Two ways to get node embeddings, each followed by a logistic-regression head
              encoder on node features only), on the contact graph or a k-NN
              graph, so the graph is the only thing that differs.
 
-Message passing runs on CPU (index_add_ is faster there than on MPS at this
-scale).
+Use --device cuda on a GPU (scripts/modal_gpu.py runs these on Modal). On Apple MPS, sparse
+aggregation is slower than on the CPU at this scale, and the global-attention reductions over all
+3.7M users come out wrong, so use the CPU there.
 
 Run: uv run python scripts/train_embed.py --model relsage
      uv run python scripts/train_embed.py --model transformer
-     uv run python scripts/train_embed.py --model global --device mps
+     uv run python scripts/train_embed.py --model transformer --add-knn knn2
+     uv run python scripts/train_embed.py --model global --device cuda
      uv run python scripts/train_embed.py --model dgi --graph real
      uv run python scripts/train_embed.py --model dgi --graph knn2
 """
 
 import argparse
+import dataclasses
 import json
 import time
 
 import numpy as np
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import roc_auc_score
 from sklearn.preprocessing import StandardScaler
+from torch import nn
 from torch_geometric.nn import DeepGraphInfomax, SAGEConv, TransformerConv
 from torch_geometric.utils import coalesce, to_undirected
 
@@ -192,25 +195,49 @@ class GlobalAttention(nn.Module):
 
 
 class GlobalFormer(nn.Module):
-    """Node features, global attention layers with residuals, linear head. Uses no edges."""
+    """Node features, pre-norm global attention blocks with residuals, linear head. Uses no edges.
+
+    At initialization the attention output is close to the same global mean for every user, so
+    it is added through the residual at its own scale. A batch norm after the attention would
+    divide that near-constant signal by its tiny spread across users and blow up the noise.
+    """
 
     def __init__(self, d_in: int, hidden: int, layers: int, heads: int, dropout: float):
         super().__init__()
         self.dropout = dropout
         self.inp = nn.Linear(d_in, hidden)
         self.attns = nn.ModuleList([GlobalAttention(hidden, heads) for _ in range(layers)])
-        self.norms = nn.ModuleList([nn.BatchNorm1d(hidden) for _ in range(layers)])
+        self.norms = nn.ModuleList([nn.LayerNorm(hidden) for _ in range(layers)])
+        self.ffns = nn.ModuleList(
+            [nn.Sequential(nn.LayerNorm(hidden), nn.Linear(hidden, hidden), nn.ReLU()) for _ in range(layers)]
+        )
         self.head = nn.Linear(hidden, 2)
 
     def embed(self, x: torch.Tensor, graph: dict[str, torch.Tensor]) -> torch.Tensor:
         h = F.relu(self.inp(x))
-        for attn, norm in zip(self.attns, self.norms, strict=True):
-            z = F.relu(norm(attn(h)))
-            h = h + F.dropout(z, self.dropout, self.training)
+        for attn, norm, ffn in zip(self.attns, self.norms, self.ffns, strict=True):
+            h = h + F.dropout(attn(norm(h)), self.dropout, self.training)
+            h = h + F.dropout(ffn(h), self.dropout, self.training)
         return h
 
     def forward(self, x: torch.Tensor, graph: dict[str, torch.Tensor]) -> torch.Tensor:
         return self.head(self.embed(x, graph))
+
+
+def add_similarity_edges(g: dgraph_data.DGraph, name: str) -> dgraph_data.DGraph:
+    """The contact graph plus a k-NN graph's edges as one extra contact type, with edge time 0.
+
+    Inputs and structure features stay those of the contact graph, so only the messages change:
+    a model that can tell the two kinds of edge apart can learn to ignore the similarity edges.
+    """
+    knn = torch.from_numpy(np.load(paths.GRAPHS / f"{name}.npy"))
+    knn_type = int(g.edge_type.max()) + 1
+    return dataclasses.replace(
+        g,
+        edge_index=torch.cat([g.edge_index, knn], 1),
+        edge_type=torch.cat([g.edge_type, torch.full((knn.shape[1],), knn_type, dtype=g.edge_type.dtype)]),
+        edge_time=torch.cat([g.edge_time, torch.zeros(knn.shape[1], dtype=g.edge_time.dtype)]),
+    )
 
 
 def transformer_graph(g: dgraph_data.DGraph) -> dict[str, torch.Tensor]:
@@ -267,6 +294,8 @@ def train_supervised(
         opt.zero_grad()
         loss = F.cross_entropy(model(x, graph)[train_idx], y_train)
         loss.backward()
+        if args.clip > 0:
+            torch.nn.utils.clip_grad_norm_(model.parameters(), args.clip)
         opt.step()
         if epoch % 5 == 0:
             model.eval()
@@ -384,13 +413,19 @@ def main() -> None:
     ap.add_argument("--dropout", type=float, default=0.3)
     ap.add_argument("--lr", type=float, default=5e-3)
     ap.add_argument("--wd", type=float, default=1e-6)
+    ap.add_argument("--clip", type=float, default=0.0, help="max gradient norm, 0 = no clipping")
     ap.add_argument("--epochs", type=int, default=300)
     ap.add_argument("--patience", type=int, default=50)
     ap.add_argument("--seed", type=int, default=0)
-    ap.add_argument("--device", default="cpu", help="cpu for message passing; global attention also runs on mps")
+    ap.add_argument("--device", default="cpu", help="cpu, cuda, or mps (mps is inaccurate for global attention)")
+    ap.add_argument("--add-knn", default=None, help="relsage/transformer: add this k-NN graph's edges (e.g. knn2)")
     args = ap.parse_args()
     torch.manual_seed(args.seed)
     g = dgraph_data.load()
+    # structure features are built (or read from cache) on the contact graph alone
+    graph_features.build("real_struct", g)
+    if args.add_knn:
+        g = add_similarity_edges(g, args.add_knn)
     y = g.y.numpy()
     te = g.test_idx.numpy()
     t0 = time.time()
@@ -398,7 +433,7 @@ def main() -> None:
 
     if args.model in ("relsage", "transformer", "global"):
         z, p, best_epoch, attn = train_supervised(g, args)
-        graph_name = "none" if args.model == "global" else "real"
+        graph_name = "none" if args.model == "global" else "real" + (f"+{args.add_knn}" if args.add_knn else "")
         test_auc = roc_auc_score(y[te], p[te].numpy())
         rows.append(
             dict(
@@ -415,7 +450,8 @@ def main() -> None:
         np.save(PREDS / f"{args.model}_{graph_name}.npy", p.numpy().astype(np.float32))
         if attn is not None:
             # message order as in transformer_graph: stored edges (target hears from source), then reversed
-            np.save(PREDS / "transformer_attention.npy", attn.numpy().astype(np.float16))
+            suffix = f"_{graph_name}" if args.add_knn else ""
+            np.save(PREDS / f"transformer_attention{suffix}.npy", attn.numpy().astype(np.float16))
     else:
         if args.graph == "real":
             # the label-free baseline: the same logistic head on node features alone

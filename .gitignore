@@ -19,3 +19,7 @@ catboost_info/
 
 # macOS
 .DS_Store
+
+# written by Syne Tune in the working directory
+std.out
+std.err

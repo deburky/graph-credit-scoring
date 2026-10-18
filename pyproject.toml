@@ -11,15 +11,16 @@ dependencies = [
     "matplotlib>=3.10.8",
     "networkx>=3.4",
     "numpy>=1.26.4",
-    "optuna>=5.0.0",
     "pandas>=2.3.3",
     "scikit-learn>=1.7.2",
+    "syne-tune>=0.16.0",
     "torch>=2.10.0",
     "torch-geometric>=2.8.1",
 ]
 
 [dependency-groups]
 dev = [
+    "modal>=1.6.2",
     "mypy>=1.18",
     "ruff>=0.14",
     "ty>=0.0.1a20",
@@ -34,7 +35,7 @@ src = ["scripts"]
 select = ["E", "F", "I", "UP", "B", "W"]
 
 [tool.ruff.lint.isort]
-known-first-party = ["paths", "dgraph_data", "graph_features", "build_graphs", "make_sample"]
+known-first-party = ["paths", "dgraph_data", "graph_features", "build_graphs", "make_sample", "metrics", "train_tabular", "tune_tabular"]
 
 [tool.mypy]
 python_version = "3.12"
@@ -44,7 +45,7 @@ warn_unused_ignores = true
 
 # third-party packages without type information
 [[tool.mypy.overrides]]
-module = ["faiss", "catboost", "lightgbm", "torch_geometric.*", "sklearn.*", "networkx"]
+module = ["faiss", "catboost", "lightgbm", "torch_geometric.*", "sklearn.*", "networkx", "syne_tune.*"]
 ignore_missing_imports = true
 
 [tool.ty.environment]

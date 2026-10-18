@@ -70,10 +70,17 @@ with more epochs; the full-graph GNNs take one to three hours each on a laptop C
 | `dgraph_data.py` | Loads the `.npz`, drops columns beyond the 17 published features, adds missing-value indicators, standardizes, splits and caches |
 | `graph_features.py` | Label-free feature blocks: structure (degree, contact-type counts, edge-time statistics) and neighbor means over the real or *k*-NN graph |
 | `build_graphs.py` | Exact *k*-NN graph with FAISS |
-| `train_tabular.py` | LightGBM, CatBoost or an MLP on any combination of feature blocks |
+| `train_tabular.py` | LightGBM, CatBoost or an MLP on any combination of feature blocks; `--tuned` uses the values from `tune_tabular.py` |
+| `tune_tabular.py` | Syne Tune (BOHB) search per learner and feature set, by validation AUC (test users untouched) |
+| `tune_trial.py` | One tuning trial; reports validation AUC as it trains so weak trials stop early |
 | `ablate_struct.py` | Which structure features carry the lift |
 | `train_gnn.py` | GraphSAGE, GCN or GAT on node features over a chosen graph |
 | `train_embed.py` | Relational GraphSAGE, graph transformer (with attention weights), global linear attention, and Deep Graph Infomax, each with a logistic-regression head |
+| `metrics.py` | AUC, Gini, Brier score, Brier Index and the base-rate-adjusted Brier Index |
+| `calibration.py` | Scores every saved prediction file on the test users with `metrics.py` |
+| `modal_gpu.py` | Runs the GPU jobs of `train_embed.py` on Modal, with the data in a private volume |
+| `bootstrap.py` | Paired bootstrap intervals for test-AUC differences between saved predictions |
+| `attention_share.py` | How much attention the transformer on the contact + k-NN graph gives the k-NN edges |
 | `run_sample.sh` | Runs all of the above on the sample |
 
 Two practical notes. Message passing on the full graph runs on the CPU: at 3.7 million nodes, sparse
@@ -94,9 +101,20 @@ in `pyproject.toml`.
 
 ## References
 
+Falkner, S., Klein, A., and Hutter, F. (2018). BOHB: robust and efficient hyperparameter
+optimization at scale. *ICML 2018*, PMLR 80, 1437–1446.
+
 Katharopoulos, A., Vyas, A., Pappas, N., and Fleuret, F. (2020). Transformers are RNNs: fast
 autoregressive transformers with linear attention. *ICML 2020*. arXiv:2006.16236.
 
 Huang, X., Yang, Y., Wang, Y., Wang, C., Zhang, Z., Xu, J., Chen, L., and Vazirgiannis, M. (2022).
 DGraph: a large-scale financial dataset for graph anomaly detection. *NeurIPS 2022, Datasets and
 Benchmarks Track*. arXiv:2207.03579.
+
+Kučinskas, S., Bastani, H., and Reynolds, M. (2026). Making forecasting scores easier to
+interpret: introducing the Brier Index. Forecasting Research Institute, 4 March 2026.
+https://forecastingresearch.substack.com/p/introducing-the-brier-index
+
+Salinas, D., Seeger, M., Klein, A., Perrone, V., Wistuba, M., and Archambeau, C. (2022). Syne
+Tune: a library for large scale hyperparameter tuning and reproducible research. *AutoML 2022*,
+PMLR 188.
