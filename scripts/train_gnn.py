@@ -9,7 +9,7 @@ thing that changes is where the edges come from:
     real+knn union of the two
 
 Graphs other than "real" are read from <DGRAPH_DIR>/graphs/<name>.npy
-(built by scripts/build_graphs.py).
+(built by scripts/build_graphs.py, or build_rf_graph.py for rfprox{k}).
 
 Run: uv run python scripts/train_gnn.py --model sage --graph real
 """

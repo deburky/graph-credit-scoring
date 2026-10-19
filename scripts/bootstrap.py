@@ -26,6 +26,8 @@ PREDS = {
     "lgbm_node": paths.PREDS / "lgbm_self_all.npy",
     "lgbm_real": paths.PREDS / "lgbm_self+real_struct+real_agg_all.npy",
     "lgbm_real_knn": paths.PREDS / "lgbm_self+real_struct+real_agg+knn6_agg_all.npy",
+    "lgbm_node_rf": paths.PREDS / "lgbm_self+rfprox6_agg_all.npy",
+    "lgbm_real_rf": paths.PREDS / "lgbm_self+real_struct+real_agg+rfprox6_agg_all.npy",
 }
 PAIRS = [
     ("relsage_knn", "relsage"),
@@ -36,6 +38,8 @@ PAIRS = [
     ("global", "lgbm_node"),
     ("lgbm_real", "relsage"),
     ("lgbm_real_knn", "lgbm_real"),
+    ("lgbm_node_rf", "lgbm_node"),
+    ("lgbm_real_rf", "lgbm_real"),
 ]
 
 

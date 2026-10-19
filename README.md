@@ -70,6 +70,7 @@ with more epochs; the full-graph GNNs take one to three hours each on a laptop C
 | `dgraph_data.py` | Loads the `.npz`, drops columns beyond the 17 published features, adds missing-value indicators, standardizes, splits and caches |
 | `graph_features.py` | Label-free feature blocks: structure (degree, contact-type counts, edge-time statistics) and neighbor means over the real or *k*-NN graph |
 | `build_graphs.py` | Exact *k*-NN graph with FAISS |
+| `build_rf_graph.py` | Unsupervised random-forest proximity graph (scikit-learn), saved as `rfprox{k}` in the *k*-NN edge format |
 | `train_tabular.py` | LightGBM, CatBoost or an MLP on any combination of feature blocks; `--tuned` uses the values from `tune_tabular.py` |
 | `tune_tabular.py` | Syne Tune (BOHB) search per learner and feature set, by validation AUC (test users untouched) |
 | `tune_trial.py` | One tuning trial; reports validation AUC as it trains so weak trials stop early |

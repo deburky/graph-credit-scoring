@@ -6,7 +6,7 @@ Feature blocks:
     real_agg    mean neighbor features over out-edges (contacts I listed),
                 in-edges (people who listed me), and 2-hop undirected
     knn{k}_agg  mean neighbor features over the k-NN graph, 1 and 2 hops
-    rf_agg      same over the RF-proximity graph (when built)
+    rfprox{k}_agg  same over the RF-proximity graph from build_rf_graph.py
 
 No labels are used in any block, so nothing leaks from val/test.
 
