@@ -105,6 +105,10 @@ uv run ty check --exit-zero-on-warning scripts/
 ty reports two library declarations as warnings at every PyTorch and PyG call site; see the comment
 in `pyproject.toml`.
 
+## License
+
+The code is released under the MIT License (see `LICENSE`). The license covers this repository only; DGraph-Fin keeps its own terms.
+
 ## References
 
 Falkner, S., Klein, A., and Hutter, F. (2018). BOHB: robust and efficient hyperparameter

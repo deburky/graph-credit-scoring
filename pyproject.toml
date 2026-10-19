@@ -3,6 +3,8 @@ name = "graph-credit-scoring"
 version = "0.1.0"
 description = "Graph-based credit-fraud scoring on emergency-contact networks: observed contact graphs, k-NN similarity graphs, tabular and GNN models"
 readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.12,<3.13"
 dependencies = [
     "catboost>=1.2",
