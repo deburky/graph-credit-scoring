@@ -35,7 +35,7 @@ src = ["scripts"]
 select = ["E", "F", "I", "UP", "B", "W"]
 
 [tool.ruff.lint.isort]
-known-first-party = ["paths", "dgraph_data", "graph_features", "build_graphs", "make_sample", "metrics", "train_tabular", "tune_tabular"]
+known-first-party = ["paths", "dgraph_data", "graph_features", "build_graphs", "make_sample", "metrics", "train_tabular", "tune_tabular", "nifty_tabular"]
 
 [tool.mypy]
 python_version = "3.12"

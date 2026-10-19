@@ -83,6 +83,9 @@ with more epochs; the full-graph GNNs take one to three hours each on a laptop C
 | `gcp_gpu.sh` | Runs those jobs over several seeds on one L4 in Google Cloud, with the data in a private bucket; the VM deletes itself when the jobs end |
 | `gcp_startup.sh` | Startup script of that VM: runs each job and seed in turn and skips finished ones, so a reclaimed spot VM resumes where it stopped |
 | `bootstrap.py` | Paired bootstrap intervals for test-AUC differences between saved predictions |
+| `nifty_tabular.py` | Loads NIFTY's German credit and Taiwan credit-default graphs with its split and scaling, and scores logistic regression and LightGBM with and without neighbor means; needs a clone of the NIFTY repository (`NIFTY_DIR`, default `nifty/dataset`) |
+| `nifty_baseline.py` | NIFTY's GCN and GraphSAGE on those graphs, with all edges removed, and with node ids shuffled |
+| `nifty_dgraph.py` | NIFTY's training recipe (without the sensitive-attribute flip) and its plain GCN on DGraph-Fin's node features, over the contact graph, the *k*-NN graph or no graph |
 | `attention_share.py` | How much attention the transformer on the contact + k-NN graph gives the k-NN edges |
 | `run_sample.sh` | Runs all of the above on the sample |
 
