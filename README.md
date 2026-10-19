@@ -79,6 +79,9 @@ with more epochs; the full-graph GNNs take one to three hours each on a laptop C
 | `metrics.py` | AUC, Gini, Brier score, Brier Index and the base-rate-adjusted Brier Index |
 | `calibration.py` | Scores every saved prediction file on the test users with `metrics.py` |
 | `modal_gpu.py` | Runs the GPU jobs of `train_embed.py` on Modal, with the data in a private volume |
+| `gpu_jobs.py` | The same GPU jobs by name, for the Google Cloud runs |
+| `gcp_gpu.sh` | Runs those jobs over several seeds on one L4 in Google Cloud, with the data in a private bucket; the VM deletes itself when the jobs end |
+| `gcp_startup.sh` | Startup script of that VM: runs each job and seed in turn and skips finished ones, so a reclaimed spot VM resumes where it stopped |
 | `bootstrap.py` | Paired bootstrap intervals for test-AUC differences between saved predictions |
 | `attention_share.py` | How much attention the transformer on the contact + k-NN graph gives the k-NN edges |
 | `run_sample.sh` | Runs all of the above on the sample |

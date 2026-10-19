@@ -45,6 +45,7 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import roc_auc_score
 from sklearn.preprocessing import StandardScaler
 from torch import nn
+from torch.utils.checkpoint import checkpoint
 from torch_geometric.nn import DeepGraphInfomax, SAGEConv, TransformerConv
 from torch_geometric.utils import coalesce, to_undirected
 
@@ -91,9 +92,10 @@ class RelConv(nn.Module):
 
 
 class RelSAGE(nn.Module):
-    def __init__(self, d_in: int, hidden: int, layers: int, n_types: int, dropout: float):
+    def __init__(self, d_in: int, hidden: int, layers: int, n_types: int, dropout: float, ckpt: bool = False):
         super().__init__()
         self.dropout = dropout
+        self.ckpt = ckpt
         self.inp = nn.Linear(d_in, hidden)
         self.convs = nn.ModuleList([RelConv(hidden, n_types) for _ in range(layers)])
         self.norms = nn.ModuleList([nn.BatchNorm1d(hidden) for _ in range(layers)])
@@ -102,7 +104,12 @@ class RelSAGE(nn.Module):
     def embed(self, x: torch.Tensor, graph: dict[str, torch.Tensor]) -> torch.Tensor:
         h = F.relu(self.inp(x))
         for conv, norm in zip(self.convs, self.norms, strict=True):
-            z = F.relu(norm(conv(h, **graph)))
+
+            def layer(h_in: torch.Tensor, conv: nn.Module = conv) -> torch.Tensor:
+                return conv(h_in, **graph)
+
+            out = checkpoint(layer, h, use_reentrant=False) if self.ckpt and self.training else layer(h)
+            z = F.relu(norm(out))
             h = h + F.dropout(z, self.dropout, self.training)
         return h
 
@@ -131,9 +138,12 @@ def relational_graph(g: dgraph_data.DGraph) -> dict[str, torch.Tensor]:
 class GraphTransformer(nn.Module):
     """TransformerConv layers over contacts in both directions, residual, linear head."""
 
-    def __init__(self, d_in: int, hidden: int, layers: int, heads: int, edge_dim: int, dropout: float):
+    def __init__(
+        self, d_in: int, hidden: int, layers: int, heads: int, edge_dim: int, dropout: float, ckpt: bool = False
+    ):
         super().__init__()
         self.dropout = dropout
+        self.ckpt = ckpt
         self.inp = nn.Linear(d_in, hidden)
         self.convs = nn.ModuleList(
             [TransformerConv(hidden, hidden // heads, heads=heads, edge_dim=edge_dim) for _ in range(layers)]
@@ -144,7 +154,9 @@ class GraphTransformer(nn.Module):
     def embed(self, x: torch.Tensor, graph: dict[str, torch.Tensor]) -> torch.Tensor:
         h = F.relu(self.inp(x))
         for conv, norm in zip(self.convs, self.norms, strict=True):
-            z = F.relu(norm(conv(h, graph["edge_index"], graph["edge_attr"])))
+            args = (h, graph["edge_index"], graph["edge_attr"])
+            out = checkpoint(conv, *args, use_reentrant=False) if self.ckpt and self.training else conv(*args)
+            z = F.relu(norm(out))
             h = h + F.dropout(z, self.dropout, self.training)
         return h
 
@@ -202,9 +214,10 @@ class GlobalFormer(nn.Module):
     divide that near-constant signal by its tiny spread across users and blow up the noise.
     """
 
-    def __init__(self, d_in: int, hidden: int, layers: int, heads: int, dropout: float):
+    def __init__(self, d_in: int, hidden: int, layers: int, heads: int, dropout: float, ckpt: bool = False):
         super().__init__()
         self.dropout = dropout
+        self.ckpt = ckpt
         self.inp = nn.Linear(d_in, hidden)
         self.attns = nn.ModuleList([GlobalAttention(hidden, heads) for _ in range(layers)])
         self.norms = nn.ModuleList([nn.LayerNorm(hidden) for _ in range(layers)])
@@ -216,8 +229,13 @@ class GlobalFormer(nn.Module):
     def embed(self, x: torch.Tensor, graph: dict[str, torch.Tensor]) -> torch.Tensor:
         h = F.relu(self.inp(x))
         for attn, norm, ffn in zip(self.attns, self.norms, self.ffns, strict=True):
-            h = h + F.dropout(attn(norm(h)), self.dropout, self.training)
-            h = h + F.dropout(ffn(h), self.dropout, self.training)
+
+            def mix(h_in: torch.Tensor, attn: nn.Module = attn, norm: nn.Module = norm) -> torch.Tensor:
+                return attn(norm(h_in))
+
+            ckpt = self.ckpt and self.training
+            h = h + F.dropout(checkpoint(mix, h, use_reentrant=False) if ckpt else mix(h), self.dropout, self.training)
+            h = h + F.dropout(checkpoint(ffn, h, use_reentrant=False) if ckpt else ffn(h), self.dropout, self.training)
         return h
 
     def forward(self, x: torch.Tensor, graph: dict[str, torch.Tensor]) -> torch.Tensor:
@@ -265,24 +283,33 @@ def train_supervised(
         # the learned-similarity arm: node features only, no edges and no graph-derived features
         x = g.x
         graph = {}
-        model = GlobalFormer(x.shape[1], args.hidden, args.layers, args.heads, args.dropout)
+        model = GlobalFormer(x.shape[1], args.hidden, args.layers, args.heads, args.dropout, args.checkpoint)
     else:
         struct = graph_features.build("real_struct", g)
         struct = (struct - struct.mean(0)) / (struct.std(0) + 1e-6)
         x = torch.cat([g.x, torch.from_numpy(struct)], 1)
         if args.model == "relsage":
             graph = relational_graph(g)
-            model = RelSAGE(x.shape[1], args.hidden, args.layers, int(g.edge_type.max()) + 1, args.dropout)
+            n_types = int(g.edge_type.max()) + 1
+            model = RelSAGE(x.shape[1], args.hidden, args.layers, n_types, args.dropout, args.checkpoint)
         else:
             graph = transformer_graph(g)
             model = GraphTransformer(
-                x.shape[1], args.hidden, args.layers, args.heads, graph["edge_attr"].shape[1], args.dropout
+                x.shape[1],
+                args.hidden,
+                args.layers,
+                args.heads,
+                graph["edge_attr"].shape[1],
+                args.dropout,
+                args.checkpoint,
             )
     x = x.to(dev)
     graph = {k: v.to(dev) for k, v in graph.items()}
     model = model.to(dev)
     train_idx, y_train = g.train_idx.to(dev), g.y[g.train_idx].to(dev)
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.wd)
+    # bfloat16 activations halve the per-edge message tensors; weights and the loss stay float32
+    amp = torch.autocast(dev.type, dtype=torch.bfloat16, enabled=args.bf16)
     print(
         f"{args.model}: inputs={x.shape[1]} edges={g.edge_index.shape[1]:,} "
         f"params={sum(p.numel() for p in model.parameters()):,}"
@@ -292,15 +319,16 @@ def train_supervised(
     for epoch in range(1, args.epochs + 1):
         model.train()
         opt.zero_grad()
-        loss = F.cross_entropy(model(x, graph)[train_idx], y_train)
+        with amp:
+            loss = F.cross_entropy(model(x, graph)[train_idx], y_train)
         loss.backward()
         if args.clip > 0:
             torch.nn.utils.clip_grad_norm_(model.parameters(), args.clip)
         opt.step()
         if epoch % 5 == 0:
             model.eval()
-            with torch.no_grad():
-                p = model(x, graph).softmax(-1)[:, 1].cpu()
+            with torch.no_grad(), amp:
+                p = model(x, graph).float().softmax(-1)[:, 1].cpu()
             val_auc = roc_auc_score(g.y[g.val_idx].numpy(), p[g.val_idx].numpy())
             if val_auc > best_val:
                 best_val, best_epoch = val_auc, epoch
@@ -316,10 +344,12 @@ def train_supervised(
     assert best_state is not None
     model.load_state_dict(best_state)
     model.eval()
-    with torch.no_grad():
+    with torch.no_grad(), amp:
         z = model.embed(x, graph)
-        p = model.head(z).softmax(-1)[:, 1]
-    attn = model.attention(x, graph)[-1].mean(1).cpu() if isinstance(model, GraphTransformer) else None
+        p = model.head(z).float().softmax(-1)[:, 1]
+        attn = model.attention(x, graph)[-1].mean(1).cpu() if isinstance(model, GraphTransformer) else None
+    z = z.float()
+    attn = attn.float() if attn is not None else None
     return z.cpu(), p.cpu(), best_epoch, attn
 
 
@@ -418,6 +448,12 @@ def main() -> None:
     ap.add_argument("--patience", type=int, default=50)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--device", default="cpu", help="cpu, cuda, or mps (mps is inaccurate for global attention)")
+    ap.add_argument(
+        "--checkpoint",
+        action="store_true",
+        help="recompute each layer's messages (or attention) in the backward pass to save GPU memory",
+    )
+    ap.add_argument("--bf16", action="store_true", help="train in bfloat16 mixed precision (cuda) to save GPU memory")
     ap.add_argument("--add-knn", default=None, help="relsage/transformer: add this k-NN graph's edges (e.g. knn2)")
     args = ap.parse_args()
     torch.manual_seed(args.seed)

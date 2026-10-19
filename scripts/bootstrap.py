@@ -25,6 +25,7 @@ PREDS = {
     "global": MODAL / "global" / "preds" / "global_none.npy",
     "lgbm_node": paths.PREDS / "lgbm_self_all.npy",
     "lgbm_real": paths.PREDS / "lgbm_self+real_struct+real_agg_all.npy",
+    "lgbm_real_knn": paths.PREDS / "lgbm_self+real_struct+real_agg+knn6_agg_all.npy",
 }
 PAIRS = [
     ("relsage_knn", "relsage"),
@@ -34,6 +35,7 @@ PAIRS = [
     ("relsage", "transformer_h64"),
     ("global", "lgbm_node"),
     ("lgbm_real", "relsage"),
+    ("lgbm_real_knn", "lgbm_real"),
 ]
 
 
