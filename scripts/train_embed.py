@@ -101,8 +101,13 @@ class RelSAGE(nn.Module):
         self.norms = nn.ModuleList([nn.BatchNorm1d(hidden) for _ in range(layers)])
         self.head = nn.Linear(hidden, 2)
 
-    def embed(self, x: torch.Tensor, graph: dict[str, torch.Tensor]) -> torch.Tensor:
+    def embed(
+        self, x: torch.Tensor, graph: dict[str, torch.Tensor], states: list[torch.Tensor] | None = None
+    ) -> torch.Tensor:
+        """Final embedding; if states is given, the hidden state before and after each layer is appended."""
         h = F.relu(self.inp(x))
+        if states is not None:
+            states.append(h)
         for conv, norm in zip(self.convs, self.norms, strict=True):
 
             def layer(h_in: torch.Tensor, conv: nn.Module = conv) -> torch.Tensor:
@@ -111,6 +116,8 @@ class RelSAGE(nn.Module):
             out = checkpoint(layer, h, use_reentrant=False) if self.ckpt and self.training else layer(h)
             z = F.relu(norm(out))
             h = h + F.dropout(z, self.dropout, self.training)
+            if states is not None:
+                states.append(h)
         return h
 
     def forward(self, x: torch.Tensor, graph: dict[str, torch.Tensor]) -> torch.Tensor:
@@ -348,6 +355,12 @@ def train_supervised(
         z = model.embed(x, graph)
         p = model.head(z).float().softmax(-1)[:, 1]
         attn = model.attention(x, graph)[-1].mean(1).cpu() if isinstance(model, GraphTransformer) else None
+        if args.save_layers and isinstance(model, RelSAGE):
+            states: list[torch.Tensor] = []
+            model.embed(x, graph, states)
+            PREDS.mkdir(parents=True, exist_ok=True)
+            # (layers + 1, n, hidden): the input projection, then the state after each layer
+            np.save(PREDS / "relsage_layers.npy", torch.stack(states).float().cpu().numpy().astype(np.float16))
     z = z.float()
     attn = attn.float() if attn is not None else None
     return z.cpu(), p.cpu(), best_epoch, attn
@@ -455,6 +468,11 @@ def main() -> None:
     )
     ap.add_argument("--bf16", action="store_true", help="train in bfloat16 mixed precision (cuda) to save GPU memory")
     ap.add_argument("--add-knn", default=None, help="relsage/transformer: add this k-NN graph's edges (e.g. knn2)")
+    ap.add_argument(
+        "--save-layers",
+        action="store_true",
+        help="relsage: save the hidden state after each layer (relsage_layers.npy)",
+    )
     args = ap.parse_args()
     torch.manual_seed(args.seed)
     g = dgraph_data.load()

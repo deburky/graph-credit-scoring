@@ -76,7 +76,8 @@ with more epochs; the full-graph GNNs take one to three hours each on a laptop C
 | `tune_trial.py` | One tuning trial; reports validation AUC as it trains so weak trials stop early |
 | `ablate_struct.py` | Which structure features carry the lift |
 | `train_gnn.py` | GraphSAGE, GCN or GAT on node features over a chosen graph |
-| `train_embed.py` | Relational GraphSAGE, graph transformer (with attention weights), global linear attention, and Deep Graph Infomax, each with a logistic-regression head |
+| `train_embed.py` | Relational GraphSAGE, graph transformer (with attention weights), global linear attention, and Deep Graph Infomax, each with a logistic-regression head; `--save-layers` keeps the relational GraphSAGE's hidden state after each layer |
+| `make_layer_map.py` | t-SNE maps of those hidden states for sampled test users and their contacts, shaded by the local share of fraudsters, with a logistic probe per layer |
 | `metrics.py` | AUC, Gini, Brier score, Brier Index and the base-rate-adjusted Brier Index |
 | `calibration.py` | Scores every saved prediction file on the test users with `metrics.py` |
 | `modal_gpu.py` | Runs the GPU jobs of `train_embed.py` on Modal, with the data in a private volume |
